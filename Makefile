@@ -571,8 +571,12 @@ KBUILD_MODULES :=
 KBUILD_BUILTIN := 1
 
 # If we have only "make modules", don't compile built-in objects.
+# When we're building modules with modversions, we need to consider
+# the built-in objects during the descend as well, in order to
+# make sure the checksums are up to date before we record them.
+
 ifeq ($(MAKECMDGOALS),modules)
-  KBUILD_BUILTIN :=
+  KBUILD_BUILTIN := $(if $(CONFIG_MODVERSIONS),1)
 endif
 
 # If we have "make <whatever> modules", compile modules
@@ -817,6 +821,24 @@ ifdef CONFIG_DEBUG_INFO_DWARF4
 KBUILD_CFLAGS	+= $(call cc-option, -gdwarf-4,)
 endif
 
+ifdef CONFIG_RKP_CFP
+CFP_CC		?= $(srctree)/toolchain/llvm-arm-toolchain-ship/10.0/bin/clang
+CC		= $(srctree)/scripts/gcc-wrapper.py $(CFP_CC)
+endif
+
+ifdef CONFIG_RKP_CFP_JOPP
+# Don't use jump tables for switch statements, since this generates indirect jump (br)
+# instructions, which are very dangerous for kernel control flow integrity.
+KBUILD_CFLAGS	+= -fno-jump-tables
+KBUILD_CFLAGS	+= $(call cc-option, -mllvm -cfp-jopp)
+endif
+
+ifdef CONFIG_RKP_CFP_ROPP
+# Register reservation is done by modifying compiler source code.
+# KBUILD_CFLAGS	+= -ffixed-x16 -ffixed-x17
+KBUILD_CFLAGS	+= $(call cc-option, -mllvm -cfp-ropp)
+endif
+
 ifdef CONFIG_DEBUG_INFO_REDUCED
 KBUILD_CFLAGS 	+= $(call cc-option, -femit-struct-debug-baseonly) \
 		   $(call cc-option,-fno-var-tracking)
@@ -1012,6 +1034,23 @@ endif
 
 ifeq ($(CONFIG_RELR),y)
 LDFLAGS_vmlinux	+= --pack-dyn-relocs=relr
+endif
+
+USE_SECGETSPF := $(shell echo $(PATH))
+ifneq ($(findstring buildscript/build_common/core/bin, $(USE_SECGETSPF)),)
+  ifneq ($(shell secgetspf SEC_PRODUCT_FEATURE_BIOAUTH_CONFIG_FINGERPRINT_TZ), false)
+    ifeq ($(CONFIG_SENSORS_FINGERPRINT), y)
+      ifneq ($(CONFIG_SEC_FACTORY), y)
+        export KBUILD_FP_SENSOR_CFLAGS := -DENABLE_SENSORS_FPRINT_SECURE
+      endif
+    endif
+  endif
+else
+  ifeq ($(CONFIG_SENSORS_FINGERPRINT), y)
+    ifneq ($(CONFIG_SEC_FACTORY), y)
+      export KBUILD_FP_SENSOR_CFLAGS := -DENABLE_SENSORS_FPRINT_SECURE
+    endif
+  endif
 endif
 
 # Default kernel image to build when no specific target is given.
@@ -1389,6 +1428,7 @@ headers_install: __headers
 	$(Q)$(MAKE) $(hdr-inst)=include/uapi dst=include
 	$(Q)$(MAKE) $(hdr-inst)=arch/$(hdr-arch)/include/uapi $(hdr-dst)
 	$(Q)$(MAKE) $(hdr-inst)=techpack
+	$(Q)$(MAKE) $(hdr-inst)=techpack/audio/include/uapi dst=techpack/audio/include
 
 PHONY += headers_check_all
 headers_check_all: headers_install_all
@@ -1399,6 +1439,7 @@ headers_check: headers_install
 	$(Q)$(MAKE) $(hdr-inst)=include/uapi dst=include HDRCHECK=1
 	$(Q)$(MAKE) $(hdr-inst)=arch/$(hdr-arch)/include/uapi $(hdr-dst) HDRCHECK=1
 	$(Q)$(MAKE) $(hdr-inst)=techpack HDRCHECK=1
+	$(Q)$(MAKE) $(hdr-inst)=techpack/audio/include/uapi dst=techpack/audio/include HDRCHECK=1
 
 # ---------------------------------------------------------------------------
 # Kernel selftest
@@ -1427,13 +1468,6 @@ ifdef CONFIG_MODULES
 # By default, build modules as well
 
 all: modules
-
-# When we're building modules with modversions, we need to consider
-# the built-in objects during the descend as well, in order to
-# make sure the checksums are up to date before we record them.
-ifdef CONFIG_MODVERSIONS
-  KBUILD_BUILTIN := 1
-endif
 
 # Build modules
 #
